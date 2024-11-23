@@ -19,15 +19,13 @@ GNU General Public License for more details.
 You should have received a copy of the GNU General Public License
 along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """
-from dbus_next import BusType, Message
 from org.acmsl.artifact.licdata.domain import DockerImageRequested
-from .dbus_docker_image_requested
+from .dbus_docker_image_requested import DbusDockerImageRequested
 from pythoneda.shared.infrastructure.dbus import DbusSignalListener
 from typing import Dict
 
 
-class LicdataArtifactSignalListener(DbusSignalListener):
-
+class LicdataArtifactDbusSignalListener(DbusSignalListener):
     """
     A PrimaryPort that listens to d-bus signals relevant to licdata-artifact.
 
@@ -46,7 +44,7 @@ class LicdataArtifactSignalListener(DbusSignalListener):
         """
         Creates a new LicdataArtifactDbusSignalListener instance.
         """
-        super().__init__()
+        super().__init__("org.acmsl.artifact.licdata.infrastructure.dbus")
 
     def signal_receivers(self, app) -> Dict:
         """
@@ -58,8 +56,10 @@ class LicdataArtifactSignalListener(DbusSignalListener):
         """
         result = {}
         key = self.__class__.full_class_name(DockerImageRequested)
-        result[key] = [DbusDockerImageRequested, BusType.SYSTEM]
+        result[key] = DbusDockerImageRequested
         return result
+
+
 # vim: syntax=python ts=4 sw=4 sts=4 tw=79 sr et
 # Local Variables:
 # mode: python

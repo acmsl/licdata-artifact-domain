@@ -26,7 +26,7 @@ from pythoneda.shared.infrastructure.dbus import DbusSignalEmitter
 from typing import Dict
 
 
-class LictadaArtifactDbusSignalEmitter(DbusSignalEmitter):
+class LicdataArtifactDbusSignalEmitter(DbusSignalEmitter):
     """
     A Port that emits licdata-artifact events as d-bus signals.
 
