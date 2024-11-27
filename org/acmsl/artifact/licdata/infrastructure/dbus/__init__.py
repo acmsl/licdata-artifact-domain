@@ -21,10 +21,6 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """
 __path__ = __import__("pkgutil").extend_path(__path__, __name__)
 
-DBUS_PATH = "/org/acmsl/artifact/licdata"
-
-from .dbus_docker_image_requested import DbusDockerImageRequested
-from .dbus_docker_image_available import DbusDockerImageAvailable
 from .licdata_artifact_dbus_signal_emitter import LicdataArtifactDbusSignalEmitter
 from .licdata_artifact_dbus_signal_listener import LicdataArtifactDbusSignalListener
 
