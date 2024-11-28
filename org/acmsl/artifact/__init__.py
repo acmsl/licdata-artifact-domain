@@ -4,7 +4,7 @@ org/acmsl/artifact/__init__.py
 
 This file ensures org.acmsl.artifact is a package.
 
-Copyright (C) 2024-today acm-sl's Licdata Artifact
+Copyright (C) 2024-today acmsl/licdata-artifact-domain
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by

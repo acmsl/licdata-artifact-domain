@@ -4,7 +4,7 @@ org/acmsl/artifact/licdata/licdata_artifact.py
 
 This file declares the LicdataArtifact class.
 
-Copyright (C) 2024-today acmsl's licdata/licdata-artifact
+Copyright (C) 2024-today acmsl/licdata-artifact-domain
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
