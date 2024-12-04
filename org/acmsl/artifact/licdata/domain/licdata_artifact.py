@@ -1,6 +1,6 @@
 # vim: set fileencoding=utf-8
 """
-org/acmsl/artifact/licdata/licdata_artifact.py
+org/acmsl/artifact/licdata/domain/licdata_artifact.py
 
 This file declares the LicdataArtifact class.
 
