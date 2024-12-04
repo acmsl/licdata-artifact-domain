@@ -29,7 +29,7 @@ from pythoneda.shared import (
     EventListener,
     Ports,
 )
-from org.acmsl.artifact.events.licdata import DockerImageAvailable, DockerImageRequested
+from pythoneda.shared.artifact.events import DockerImageAvailable, DockerImageRequested
 
 
 class LicdataArtifact(EventListener):
@@ -84,9 +84,9 @@ class LicdataArtifact(EventListener):
         Gets notified of a DockerImageRequested event.
         Emits a DockerImageAvailable event.
         :param event: The event.
-        :type event: org.acmsl.artifact.events.licdata.DockerImageRequested
+        :type event: pythoneda.shared.artifact.events.DockerImageRequested
         :return: A request to build a Docker image.
-        :rtype: org.acmsl.artifact.events.licdata.DockerImageAvailable
+        :rtype: pythoneda.shared.artifact.events.DockerImageAvailable
         """
         LicdataArtifact.logger().info(f"Received {event}")
 
