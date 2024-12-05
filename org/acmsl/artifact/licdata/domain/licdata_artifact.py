@@ -89,6 +89,9 @@ class LicdataArtifact(EventListener):
         :rtype: pythoneda.shared.artifact.events.DockerImageAvailable
         """
         LicdataArtifact.logger().info(f"Received {event}")
+        return DockerImageAvailable(
+            event.image_name, "latest", "[url]", event.id, event.previous_event_ids
+        )
 
 
 # vim: syntax=python ts=4 sw=4 sts=4 tw=79 sr et
