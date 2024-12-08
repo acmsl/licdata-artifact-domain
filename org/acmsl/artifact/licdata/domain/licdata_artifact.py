@@ -180,7 +180,7 @@ EXPOSE 80
         client = docker.from_env()
 
         # Desired image tag
-        image_tag = f"{event.image_name}:{event.image_tag}"
+        image_tag = f"{event.image_name}:{event.image_version}"
 
         # Create an in-memory tar archive with the Dockerfile
         fileobj = io.BytesIO()
@@ -199,6 +199,7 @@ EXPOSE 80
         # Reset the file pointer to the beginning
         fileobj.seek(0)
 
+        print(f"type of client.images: {type(client.images)}")
         # Build the image using the Docker SDK
         image, build_logs = client.images.build(
             fileobj=fileobj, custom_context=True, rm=True, tag=image_tag
@@ -207,24 +208,16 @@ EXPOSE 80
         # Optional: Print build logs
         for chunk in build_logs:
             if "stream" in chunk:
-                self.__class__.logger().debug(chunk["stream"].strip())
+                LicdataArtifact.logger().debug(chunk["stream"].strip())
 
-        self.__class__.logger().info(f"Image '{image_tag}' built successfully.")
-
-        # Build and push the Docker image
-        image = Image(
-            event.image_name,
-            build=temporary_folder,
-            image_name=image_name,
-            registry=Registry(
-                server=containerRegistry.login_server,
-                username=admin_username,
-                password=admin_password,
-            ),
-        )
+        LicdataArtifact.logger().info(f"Image '{image_tag}' built successfully.")
 
         return DockerImageAvailable(
-            event.image_name, "latest", "[url]", event.id, event.previous_event_ids
+            event.image_name,
+            event.image_version,
+            None,
+            event.id,
+            event.previous_event_ids,
         )
 
 
