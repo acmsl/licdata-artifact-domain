@@ -19,7 +19,10 @@ GNU General Public License for more details.
 You should have received a copy of the GNU General Public License
 along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """
+import docker
+import io
 import json
+import os
 from pythoneda.shared import (
     attribute,
     listen,
@@ -29,7 +32,13 @@ from pythoneda.shared import (
     EventListener,
     Ports,
 )
-from pythoneda.shared.artifact.events import DockerImageAvailable, DockerImageRequested
+from pythoneda.shared.artifact.events import (
+    DockerImageAvailable,
+    DockerImagePushed,
+    DockerImageRequested,
+)
+import tarfile
+import tempfile
 
 
 class LicdataArtifact(EventListener):
@@ -89,6 +98,131 @@ class LicdataArtifact(EventListener):
         :rtype: pythoneda.shared.artifact.events.DockerImageAvailable
         """
         LicdataArtifact.logger().info(f"Received {event}")
+
+        # Create a temporary directory
+        temp_dir = tempfile.TemporaryDirectory()
+
+        # Define the path for the requirements.txt
+        requirements_txt_path = os.path.join(temp_dir.name, "requirements.txt")
+
+        # Write the Dockerfile content
+        requirements_txt_content = """
+azure-functions==1.21.3
+bcrypt==4.1.2
+brotlicffi==1.1.0.0
+certifi==2024.2.2
+cffi==1.16.0
+charset-normalizer==3.3.2
+coverage==7.4.4
+cryptography==42.0.5
+dbus_next==0.2.3
+ddt==1.7.2
+Deprecated==1.2.14
+dnspython==2.6.1
+dulwich==0.21.7
+esdbclient==1.1.3
+gitdb==4.0.11
+GitPython==3.1.43
+grpcio==1.62.2
+idna==3.7
+installer==0.7.0
+packaging==24.0
+paramiko==3.4.0
+path==16.14.0
+poetry-core==1.9.0
+protobuf==4.24.4
+pyasn1==0.6.0
+pycparser==2.22
+PyGithub==2.3.0
+PyJWT==2.8.0
+PyNaCl==1.5.0
+requests==2.31.0
+semver==3.0.2
+six==1.16.0
+typing_extensions==4.11.0
+unidiff==0.7.5
+urllib3==2.2.1
+wheel==0.43.0
+wrapt==1.16.0
+        """
+
+        # Write the Dockerfile content
+        dockerfile_content = """
+FROM mcr.microsoft.com/azure-functions/python:4-python3.11
+
+ENV AzureWebJobsScriptRoot=/home/site/wwwroot \
+    AzureFunctionsJobHost__Logging__Console__IsEnabled=true \
+    GIT_PYTHON_GIT_EXECUTABLE=/usr/bin/git
+
+
+# Install system-level dependencies
+RUN apt-get update && apt-get install -y \
+    libssl-dev git libc-ares2 \
+    && apt-get clean
+
+# Set the working directory
+WORKDIR /home/site/wwwroot
+
+ADD .deps/ .
+
+COPY requirements.txt .
+
+RUN pip install --upgrade pip && pip install grpcio && pip install --no-cache-dir -r requirements.txt --user
+
+ENV FUNCTIONS_WORKER_RUNTIME python
+
+ENV PYTHONPATH="${PYTHONPATH}:/root/.local/lib/python3.11/site-packages"
+
+EXPOSE 80
+        """
+
+        # Connect to Docker
+        client = docker.from_env()
+
+        # Desired image tag
+        image_tag = f"{event.image_name}:{event.image_tag}"
+
+        # Create an in-memory tar archive with the Dockerfile
+        fileobj = io.BytesIO()
+        with tarfile.TarFile(fileobj=fileobj, mode="w") as tar:
+            dockerfile_bytes = dockerfile_content.encode("utf-8")
+            dockerfile_info = tarfile.TarInfo("Dockerfile")
+            dockerfile_info.size = len(dockerfile_bytes)
+            tar.addfile(dockerfile_info, io.BytesIO(dockerfile_bytes))
+            requirements_txt_bytes = requirements_txt_content.encode("utf-8")
+            requirements_txt_info = tarfile.TarInfo("requirements.txt")
+            requirements_txt_info.size = len(requirements_txt_bytes)
+            tar.addfile(requirements_txt_info, io.BytesIO(requirements_txt_bytes))
+            # TODO: Copy the dependencies somehow
+            tar.add("/tmp/deps", arcname=".deps")
+
+        # Reset the file pointer to the beginning
+        fileobj.seek(0)
+
+        # Build the image using the Docker SDK
+        image, build_logs = client.images.build(
+            fileobj=fileobj, custom_context=True, rm=True, tag=image_tag
+        )
+
+        # Optional: Print build logs
+        for chunk in build_logs:
+            if "stream" in chunk:
+                self.__class__.logger().debug(chunk["stream"].strip())
+
+        self.__class__.logger().info(f"Image '{image_tag}' built successfully.")
+
+        # Build and push the Docker image
+        image = Image(
+            event.image_name,
+            build=temporary_folder,
+            image_name=image_name,
+            registry=Registry(
+                server=containerRegistry.login_server,
+                username=admin_username,
+                password=admin_password,
+            ),
+        )
+
         return DockerImageAvailable(
             event.image_name, "latest", "[url]", event.id, event.previous_event_ids
         )
