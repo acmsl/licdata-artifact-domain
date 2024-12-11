@@ -34,11 +34,13 @@ from pythoneda.shared import (
 )
 from pythoneda.shared.artifact.events import (
     DockerImageAvailable,
+    DockerImageFailed,
     DockerImagePushed,
     DockerImageRequested,
 )
 import tarfile
 import tempfile
+from typing import Dict, List
 
 
 class LicdataArtifact(EventListener):
@@ -61,6 +63,7 @@ class LicdataArtifact(EventListener):
         Creates a new LicdataArtifact instance.
         """
         super().__init__()
+        self._dependencies = None
 
     @classmethod
     def instance(cls):
@@ -75,6 +78,15 @@ class LicdataArtifact(EventListener):
         return cls._singleton
 
     @classmethod
+    def initialize(cls):
+        """
+        Initializes the singleton instance.
+        :return: Such instance.
+        :rtype: org.acmsl.artifact.licdata.LicdataArtifact
+        """
+        return cls()
+
+    @classmethod
     @property
     def url(cls) -> str:
         """
@@ -83,6 +95,346 @@ class LicdataArtifact(EventListener):
         :rtype: str
         """
         return "https://github.com/acmsl/licdata-artifact"
+
+    def nix_path_of(self, derivation: str, build: bool = True) -> str:
+        """
+        Retrieves the Nix path of given derivation, building it if necessary.
+        :param derivation: The derivation.
+        :type derivation: str
+        :param build: Whether to build the derivation if not found.
+        :type build: bool
+        :return: Such path.
+        :rtype: str
+        """
+        import subprocess
+
+        result = None
+
+        try:
+            cmd = ["nix", "eval", "--raw", derivation]
+            output = subprocess.run(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                check=True,
+            )
+            result = output.stdout.strip()
+
+            # if result does not exist:
+            if not os.path.exists(result) and build:
+                self.nix_build(derivation)
+                result = self.nix_path_of(derivation, False)
+
+        except subprocess.CalledProcessError as e:
+            LicdataArtifact.logger().debug(f"Error: {e.stderr}")
+
+        return result
+
+    def nix_path_of_rydnr_nix_flakes(self, name: str, version: str) -> str:
+        """
+        Retrieves the Nix path of given dependency.
+        :param name: The dependency name.
+        :type name: str
+        :param version: The dependency version.
+        :type version: str
+        :return: Such path.
+        :rtype: str
+        """
+        return self.nix_path_of(f"github:rydnr/nix-flakes/{name}-{version}?dir={name}")
+
+    def nix_path_of_nixpkgs(self, name: str, version: str) -> str:
+        """
+        Retrieves the Nix path of given dependency.
+        :param name: The dependency name.
+        :type name: str
+        :param version: The dependency version.
+        :type version: str
+        :return: Such path.
+        :rtype: str
+        """
+        return self.nix_path_of(f"nixpkgs#python3Packages.{name}")
+
+    def nix_build(self, derivation: str):
+        """
+        Builds the derivation.
+        :param derivation: The derivation.
+        :type derivation: str
+        """
+        import subprocess
+
+        try:
+            cmd = ["nix", "build", derivation]
+            output = subprocess.run(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                check=True,
+            )
+            LicdataArtifact.logger().debug(f"Output: {output.stdout}")
+
+        except subprocess.CalledProcessError as e:
+            LicdataArtifact.logger().debug(f"Error: {e.stderr}")
+
+    @property
+    def dependencies(self) -> List[Dict[str, str]]:
+        """
+        Retrieves the dependencies.
+        :return: Such dependencies.
+        :rtype: List[Dict[str,str]]
+        """
+        if self._dependencies is None:
+            self._dependencies = self.retrieve_dependencies()
+        return self._dependencies
+
+    def retrieve_dependencies(self) -> List[Dict[str, str]]:
+        """
+        Retrieves the dependencies.
+        :return: Such dependencies.
+        :rtype: List[Dict[str,str]]
+        """
+        return [
+            {
+                "name": "azure-functions",
+                "version": "1.21.3",
+                "path": self.nix_path_of_rydnr_nix_flakes(
+                    "azure-functions", "1.21.3.2"
+                ),
+            },
+            {
+                "name": "brotlicffi",
+                "version": "1.1.0.0",
+                "path": self.nix_path_of_nixpkgs("brotlicffi", "1.1.0.0"),
+            },
+            {
+                "name": "certifi",
+                "version": "2024.2.2",
+                "path": self.nix_path_of_nixpkgs("certifi", "2024.2.2"),
+            },
+            {
+                "name": "cffi",
+                "version": "1.16.0",
+                "path": self.nix_path_of_nixpkgs("cffi", "1.16.0"),
+            },
+            {
+                "name": "charset-normalizer",
+                "version": "3.3.2",
+                "path": self.nix_path_of_nixpkgs("charset-normalizer", "3.3.2"),
+            },
+            {
+                "name": "coverage",
+                "version": "7.4.4",
+                "path": self.nix_path_of_nixpkgs("coverage", "7.4.4"),
+            },
+            {
+                "name": "cryptography",
+                "version": "42.0.5",
+                "path": self.nix_path_of_nixpkgs("cryptography", "42.0.5"),
+            },
+            {
+                "name": "dbus_next",
+                "version": "0.2.3",
+                "path": self.nix_path_of_rydnr_nix_flakes("dbus-next", "0.2.3.3"),
+            },
+            {
+                "name": "ddt",
+                "version": "1.7.2",
+                "path": self.nix_path_of_nixpkgs("ddt", "1.7.2"),
+            },
+            {
+                "name": "Deprecated",
+                "version": "1.2.14",
+                "path": self.nix_path_of_nixpkgs("deprecated", "1.2.14"),
+            },
+            {
+                "name": "dnspython",
+                "version": "2.6.1",
+                "path": self.nix_path_of_nixpkgs("dnspython", "2.6.1"),
+            },
+            {
+                "name": "dulwich",
+                "version": "0.21.7",
+                "path": self.nix_path_of_nixpkgs("dulwich", "0.21.7"),
+            },
+            {
+                "name": "esdbclient",
+                "version": "1.1.3",
+                "path": self.nix_path_of_rydnr_nix_flakes("esdbclient", "1.1.3.1"),
+            },
+            {
+                "name": "gitdb",
+                "version": "4.0.11",
+                "path": self.nix_path_of_nixpkgs("gitdb", "4.0.11"),
+            },
+            {
+                "name": "GitPython",
+                "version": "3.1.43",
+                "path": self.nix_path_of_nixpkgs("GitPython", "3.1.43"),
+            },
+            {
+                "name": "grpcio",
+                "version": "1.62.2",
+                "path": self.nix_path_of_nixpkgs("grpcio", "1.62.2"),
+            },
+            {
+                "name": "idna",
+                "version": "3.7",
+                "path": self.nix_path_of_nixpkgs("idna", "3.7"),
+            },
+            {
+                "name": "installer",
+                "version": "0.7.0",
+                "path": self.nix_path_of_nixpkgs("installer", "0.7.0"),
+            },
+            {
+                "name": "packaging",
+                "version": "24.0",
+                "path": self.nix_path_of_nixpkgs("packaging", "24.0"),
+            },
+            {
+                "name": "paramiko",
+                "version": "3.4.0",
+                "path": self.nix_path_of_nixpkgs("paramiko", "3.4.0"),
+            },
+            {
+                "name": "path",
+                "version": "16.14.0",
+                "path": self.nix_path_of_nixpkgs("path", "16.14.0"),
+            },
+            {
+                "name": "poetry-core",
+                "version": "1.9.0",
+                "path": self.nix_path_of_nixpkgs("poetry-core", "1.9.0"),
+            },
+            {
+                "name": "protobuf",
+                "version": "4.24.4",
+                "path": self.nix_path_of_nixpkgs("protobuf", "4.24.4"),
+            },
+            {
+                "name": "pyasn1",
+                "version": "0.6.0",
+                "path": self.nix_path_of_nixpkgs("pyasn1", "0.6.0"),
+            },
+            {
+                "name": "pycparser",
+                "version": "2.22",
+                "path": self.nix_path_of_nixpkgs("pycparser", "2.22"),
+            },
+            {
+                "name": "PyGithub",
+                "version": "2.3.0",
+                "path": self.nix_path_of_nixpkgs("PyGithub", "2.3.0"),
+            },
+            {
+                "name": "PyJWT",
+                "version": "2.8.0",
+                "path": self.nix_path_of_nixpkgs("pyjwt", "2.8.0"),
+            },
+            {
+                "name": "PyNaCl",
+                "version": "1.5.0",
+                "path": self.nix_path_of_nixpkgs("pynacl", "1.5.0"),
+            },
+            {
+                "name": "requests",
+                "version": "2.31.0",
+                "path": self.nix_path_of_nixpkgs("requests", "2.31.0"),
+            },
+            {
+                "name": "semver",
+                "version": "3.0.2",
+                "path": self.nix_path_of_nixpkgs("semver", "3.0.2"),
+            },
+            {
+                "name": "six",
+                "version": "1.16.0",
+                "path": self.nix_path_of_nixpkgs("six", "1.16.0"),
+            },
+            {
+                "name": "typing_extensions",
+                "version": "4.11.0",
+                "path": self.nix_path_of_nixpkgs("typing-extensions", "4.11.0"),
+            },
+            {
+                "name": "unidiff",
+                "version": "0.7.5",
+                "path": self.nix_path_of_nixpkgs("unidiff", "0.7.5"),
+            },
+            {
+                "name": "urllib3",
+                "version": "2.2.1",
+                "path": self.nix_path_of_nixpkgs("urllib3", "2.2.1"),
+            },
+            {
+                "name": "wheel",
+                "version": "0.43.0",
+                "path": self.nix_path_of_nixpkgs("wheel", "0.43.0"),
+            },
+            {
+                "name": "wrapt",
+                "version": "1.16.0",
+                "path": self.nix_path_of_nixpkgs("wrapt", "1.16.0"),
+            },
+        ]
+
+    @classmethod
+    def copy_dependency_to(cls, dep: Dict[str, str], dest: str):
+        """
+        Copies a dependency to a destination.
+        :param dep: The dependency.
+        :type dep: Dict[str, str]
+        :param dest: The destination.
+        :type dest: str
+        """
+        import os
+        import shutil
+
+        os.makedirs(dest, exist_ok=True)
+
+        # List all subdirectories in the folder
+        subdirs = next(os.walk(os.path.join(dep["path"], "lib")))[1]
+
+        # Find the first subfolder that starts with "python"
+        python_subfolder = next(
+            (subdir for subdir in subdirs if subdir.startswith("python")), None
+        )
+
+        source_folder = os.path.join(
+            dep["path"], "lib", python_subfolder, "site-packages"
+        )
+
+        destination_path = os.path.join(
+            dest, os.path.basename(f'{dep["name"]}-{dep["version"]}')
+        )
+        shutil.copytree(source_folder, destination_path)
+
+    @classmethod
+    def copy_dependencies_to(cls, deps: List[Dict[str, str]], dest: str):
+        """
+        Copies dependencies to a destination.
+        :param deps: The dependencies.
+        :type deps: List[Dict[str, str]]
+        :param dest: The destination.
+        :type dest: str
+        """
+        for dep in deps:
+            LicdataArtifact.logger().info(f"Copying {dep['name']} to {dest}")
+            cls.copy_dependency_to(dep, dest)
+
+    def build_pythonpath(self) -> str:
+        """
+        Builds the PYTHONPATH.
+        :return: Such path.
+        :rtype: str
+        """
+        paths = [
+            f'/home/site/wwwroot/python_deps/{dep["name"]}-{dep["version"]}'
+            for dep in self.dependencies
+        ]
+        LicdataArtifact.logger().info(f"PYTHONPATH: {':'.join(paths)}")
+        return ":".join(paths)
 
     @classmethod
     @listen(DockerImageRequested)
@@ -99,61 +451,59 @@ class LicdataArtifact(EventListener):
         """
         LicdataArtifact.logger().info(f"Received {event}")
 
+        instance = cls.instance()
+
+        if instance.is_for_azure(event):
+            return await cls.build_docker_image_for_azure(event)
+
+        return DockerImageFailed(
+            event.image_name,
+            event.image_version,
+            "Image not available",
+            event.id + event.previous_event_ids,
+        )
+
+    def is_for_azure(self, event: DockerImageRequested) -> bool:
+        """
+        Determines if the event is for Azure.
+        :param event: The event.
+        :type event: pythoneda.shared.artifact.events.DockerImageRequested
+        :return: True if the event is for Azure, False otherwise.
+        :rtype: bool
+        """
+        return event.metadata.get("variant", None) == "azure"
+
+    @classmethod
+    async def build_docker_image_for_azure(
+        cls, event: DockerImageRequested
+    ) -> DockerImageAvailable:
+        """
+        Fulfills the build of an Azure-tailored Docker image.
+        Emits a DockerImageAvailable event.
+        :param event: The event.
+        :type event: pythoneda.shared.artifact.events.DockerImageRequested
+        :return: A request to build a Docker image.
+        :rtype: pythoneda.shared.artifact.events.DockerImageAvailable
+        """
+        instance = cls.instance()
+
+        azure_base_image_version = event.metadata.get("azure_base_image_version", "4")
+        python_version = event.metadata.get("python_version", "3.11")
+
         # Create a temporary directory
         temp_dir = tempfile.TemporaryDirectory()
 
-        # Define the path for the requirements.txt
-        requirements_txt_path = os.path.join(temp_dir.name, "requirements.txt")
+        cls.copy_dependencies_to(
+            instance.dependencies, os.path.join(temp_dir.name, "python_deps")
+        )
 
         # Write the Dockerfile content
-        requirements_txt_content = """
-azure-functions==1.21.3
-bcrypt==4.1.2
-brotlicffi==1.1.0.0
-certifi==2024.2.2
-cffi==1.16.0
-charset-normalizer==3.3.2
-coverage==7.4.4
-cryptography==42.0.5
-dbus_next==0.2.3
-ddt==1.7.2
-Deprecated==1.2.14
-dnspython==2.6.1
-dulwich==0.21.7
-esdbclient==1.1.3
-gitdb==4.0.11
-GitPython==3.1.43
-grpcio==1.62.2
-idna==3.7
-installer==0.7.0
-packaging==24.0
-paramiko==3.4.0
-path==16.14.0
-poetry-core==1.9.0
-protobuf==4.24.4
-pyasn1==0.6.0
-pycparser==2.22
-PyGithub==2.3.0
-PyJWT==2.8.0
-PyNaCl==1.5.0
-requests==2.31.0
-semver==3.0.2
-six==1.16.0
-typing_extensions==4.11.0
-unidiff==0.7.5
-urllib3==2.2.1
-wheel==0.43.0
-wrapt==1.16.0
-        """
-
-        # Write the Dockerfile content
-        dockerfile_content = """
-FROM mcr.microsoft.com/azure-functions/python:4-python3.11
+        dockerfile_content = f"""
+FROM mcr.microsoft.com/azure-functions/python:{azure_base_image_version}-python{python_version}
 
 ENV AzureWebJobsScriptRoot=/home/site/wwwroot \
     AzureFunctionsJobHost__Logging__Console__IsEnabled=true \
     GIT_PYTHON_GIT_EXECUTABLE=/usr/bin/git
-
 
 # Install system-level dependencies
 RUN apt-get update && apt-get install -y \
@@ -163,15 +513,13 @@ RUN apt-get update && apt-get install -y \
 # Set the working directory
 WORKDIR /home/site/wwwroot
 
-ADD .deps/ .
+ADD python_deps/ .
 
-COPY requirements.txt .
-
-RUN pip install --upgrade pip && pip install grpcio && pip install --no-cache-dir -r requirements.txt --user
+RUN pip install --upgrade pip && pip install grpcio
 
 ENV FUNCTIONS_WORKER_RUNTIME python
 
-ENV PYTHONPATH="${PYTHONPATH}:/root/.local/lib/python3.11/site-packages"
+ENV PYTHONPATH="${{PYTHONPATH}}:{instance.build_pythonpath()}/root/.local/lib/python{python_version}/site-packages"
 
 EXPOSE 80
         """
@@ -180,7 +528,9 @@ EXPOSE 80
         client = docker.from_env()
 
         # Desired image tag
-        image_tag = f"{event.image_name}:{event.image_version}"
+        image_name = f"{event.image_name}-azure-{azure_base_image_version}-python{python_version.replace('.', '')}"
+        image_version = event.image_version
+        image_tag = f"{image_name}:{image_version}"
 
         # Create an in-memory tar archive with the Dockerfile
         fileobj = io.BytesIO()
@@ -189,12 +539,7 @@ EXPOSE 80
             dockerfile_info = tarfile.TarInfo("Dockerfile")
             dockerfile_info.size = len(dockerfile_bytes)
             tar.addfile(dockerfile_info, io.BytesIO(dockerfile_bytes))
-            requirements_txt_bytes = requirements_txt_content.encode("utf-8")
-            requirements_txt_info = tarfile.TarInfo("requirements.txt")
-            requirements_txt_info.size = len(requirements_txt_bytes)
-            tar.addfile(requirements_txt_info, io.BytesIO(requirements_txt_bytes))
-            # TODO: Copy the dependencies somehow
-            tar.add("/tmp/deps", arcname=".deps")
+            tar.add(temp_dir.name, arcname="python_deps")
 
         # Reset the file pointer to the beginning
         fileobj.seek(0)
@@ -213,9 +558,10 @@ EXPOSE 80
         LicdataArtifact.logger().info(f"Image '{image_tag}' built successfully.")
 
         return DockerImageAvailable(
-            event.image_name,
-            event.image_version,
-            None,
+            image_name,
+            image_version,
+            f"localhost:5000/{image_tag}",
+            event.metadata,
             event.id,
             event.previous_event_ids,
         )
