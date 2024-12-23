@@ -445,15 +445,17 @@ class LicdataArtifact(Flow, EventListener):
     @listen(DockerImageRequested)
     async def listen_DockerImageRequested(
         cls, event: DockerImageRequested
-    ) -> DockerImageAvailable:
+    ) -> List[Event]:
         """
         Gets notified of a DockerImageRequested event.
         Emits a DockerImageAvailable event.
         :param event: The event.
         :type event: pythoneda.shared.artifact.events.DockerImageRequested
         :return: A request to build a Docker image.
-        :rtype: pythoneda.shared.artifact.events.DockerImageAvailable
+        :rtype: pythoneda.shared.Event
         """
+        result = []
+
         LicdataArtifact.logger().info(f"Received {event}")
 
         instance = cls.instance()
@@ -461,15 +463,27 @@ class LicdataArtifact(Flow, EventListener):
         instance.add_event(event)
 
         if instance.is_for_azure(event):
-            return await instance.build_docker_image_for_azure(event)
-
-        return DockerImageFailed(
-            event.image_name,
-            event.image_version,
-            event.metadata,
-            "Image not available",
-            event.id + event.previous_event_ids,
-        )
+            docker_image_available = await instance.build_docker_image_for_azure(event)
+            result.append(docker_image_available)
+            instance.add_event(docker_image_available)
+            credential_requested = CredentialRequested(
+                event.metadata.get("credential_name", None),
+                event.metadata,
+                [docker_image_available.id] + docker_image_available.previous_event_ids,
+            )
+            result.append(credential_requested)
+            instance.add_event(credential_requested)
+        else:
+            result.append(
+                DockerImageFailed(
+                    event.image_name,
+                    event.image_version,
+                    event.metadata,
+                    "Image not available",
+                    [event.id] + event.previous_event_ids,
+                )
+            )
+        return result
 
     def is_for_azure(self, event: DockerImageRequested) -> bool:
         """
@@ -568,8 +582,7 @@ EXPOSE 80
             image_version,
             f"localhost:5000/{image_tag}",
             event.metadata,
-            event.id,
-            None,
+            [event.id] + event.previous_event_ids,
         )
 
         instance.add_event(result)
@@ -586,7 +599,10 @@ EXPOSE 80
         :param event: The event.
         :type event: pythoneda.shared.runtime.secrets.events.CredentialProvided
         """
-        return await cls.instance().resume(event)
+        cls.logger().debug(f"Received {event}")
+        resumed = await cls.instance().resume(event)
+
+        return resumed
 
     async def continue_flow(
         self, event: CredentialProvided, previousEvent: CredentialRequested
@@ -599,29 +615,71 @@ EXPOSE 80
         :type event: pythoneda.shared.runtime.secrets.events.CredentialRequested
         """
         self.__class__.logger().info(
-            f"Credential available: {event.name} ({event.metadata})"
+            f"Credential available: {event.name}/{event.value} ({event.metadata})"
         )
 
         docker_image_available = self.find_latest_event(DockerImageAvailable)
 
-        return await self.push_docker_image_for_azure(docker_image_available)
+        return await self.push_docker_image_for_azure(docker_image_available, event)
 
     async def push_docker_image_for_azure(
-        cls, event: DockerImageAvailable
+        cls,
+        dockerImageAvailable: DockerImageAvailable,
+        credentialProvided: CredentialProvided,
     ) -> DockerImagePushed:
         """
         Pushes the Docker image.
         Returns a DockerImagePushed event.
-        :param event: The event.
-        :type event: pythoneda.shared.artifact.events.DockerImageAvailable
+        :param dockerImageAvailable: The DockerImageAvailable event.
+        :type dockerImageAvailable: pythoneda.shared.artifact.events.DockerImageAvailable
+        :param credentialProvided: The CredentialProvided event.
+        :type credentialProvided: pythoneda.shared.runtime.secrets.events.CredentialProvided
         :return: A request to build a Docker image.
         :rtype: pythoneda.shared.artifact.events.DockerImagePushed
         """
         instance = cls.instance()
 
-        print(
-            f"TODO: push the image {event.image_name} to the registry {event.metadata.get('registry_url', None)}"
+        username = credentialProvided.name
+        password = credentialProvided.value
+        docker_registry_url = credentialProvided.metadata.get(
+            "docker_registry_url", None
         )
+        local_image = (
+            f"{dockerImageAvailable.image_name}:{dockerImageAvailable.image_version}"
+        )
+        remote_image = f"{docker_registry_url}/{local_image}"
+
+        # 1. Instantiate the Docker client from environment
+        client = docker.from_env()
+
+        # 2. Log in to Azure Container Registry
+        login_response = client.login(
+            username=username, password=password, registry=docker_registry_url
+        )
+
+        # 3. Tag the local image with the registry's name
+        image = client.images.get(local_image)
+        image.tag(remote_image)
+
+        # 4. Push the image
+        push_log = client.images.push(remote_image, stream=False, decode=True)
+
+        # 5. Print or log the push results
+        LicdataArtifact.logger().debug(push_log)
+
+        result = DockerImagePushed(
+            dockerImageAvailable.image_name,
+            dockerImageAvailable.image_version,
+            remote_image,
+            docker_registry_url,
+            dockerImageAvailable.metadata,
+            [dockerImageAvailable.id, credentialProvided.id]
+            + dockerImageAvailable.previous_event_ids,
+        )
+
+        LicdataArtifact.logger().info(f"Pushed {remote_image} to {docker_registry_url}")
+
+        return result
 
 
 # vim: syntax=python ts=4 sw=4 sts=4 tw=79 sr et
