@@ -37,6 +37,7 @@ from pythoneda.shared.artifact.events import (
     DockerImageAvailable,
     DockerImageFailed,
     DockerImagePushed,
+    DockerImagePushRequested,
     DockerImageRequested,
 )
 from pythoneda.shared.runtime.secrets.events import (
@@ -99,7 +100,7 @@ class LicdataArtifact(Flow, EventListener):
         :return: Such url.
         :rtype: str
         """
-        return "https://github.com/acmsl/licdata-artifact"
+        return "https://github.com/acmsl/licdata"
 
     def nix_path_of(self, derivation: str, build: bool = True) -> str:
         """
@@ -425,6 +426,16 @@ class LicdataArtifact(Flow, EventListener):
             LicdataArtifact.logger().info(f"Copying {dep['name']} to {dest}")
             self.__class__.copy_dependency_to(dep, dest)
 
+    def copy_cloned_repo_to(self, dest: str):
+        """
+        Copies the cloned repository to a destination.
+        :param dest: The destination.
+        :type dest: str
+        """
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_folder = self.clone_artifact(tmp_dir.name)
+            shutil.copytree(repo_folder, dest)
+
     def build_pythonpath(self) -> str:
         """
         Builds the PYTHONPATH.
@@ -438,6 +449,19 @@ class LicdataArtifact(Flow, EventListener):
         LicdataArtifact.logger().debug(f"PYTHONPATH: {':'.join(paths)}")
         return ":".join(paths)
 
+    async def clone_artifact(self, rootFolder: str) -> str:
+        """
+        Clones the artifact into given folder.
+        :param rootFolder: The root folder.
+        :type rootFolder: str
+        :return: The folder of the cloned repository.
+        :rtype: str
+        """
+        git_clone = GitClone(rootFolder)
+        (code, stdout, stderr) = await git_clone.clone(self.url)
+
+        return rootFolder + "/licdata"
+
     @classmethod
     @listen(DockerImageRequested)
     async def listen_DockerImageRequested(
@@ -449,7 +473,7 @@ class LicdataArtifact(Flow, EventListener):
         :param event: The event.
         :type event: pythoneda.shared.artifact.events.DockerImageRequested
         :return: A request to build a Docker image.
-        :rtype: pythoneda.shared.Event
+        :rtype: pythoneda.shared.artifact.events.DockerImageAvailable
         """
         result = []
 
@@ -467,6 +491,62 @@ class LicdataArtifact(Flow, EventListener):
                 [docker_image_available.id] + docker_image_available.previous_event_ids,
             )
             result.append(credential_requested)
+        else:
+            result.append(
+                DockerImageFailed(
+                    event.image_name,
+                    event.image_version,
+                    event.metadata,
+                    "Image not available",
+                    [event.id] + event.previous_event_ids,
+                )
+            )
+
+        for evt in result:
+            instance.add_event(evt)
+
+        return result
+
+    @classmethod
+    @listen(DockerImagePushRequested)
+    async def listen_DockerImagePushRequested(
+        cls, event: DockerImagePushed
+    ) -> List[Event]:
+        """
+        Gets notified of a DockerImagePushRequested event.
+        Emits a DockerImagePushed event.
+        :param event: The event.
+        :type event: pythoneda.shared.artifact.events.DockerImagePushRequested
+        :return: A request to build and push a Docker image.
+        :rtype: pythoneda.shared.artifact.events.DockerImagePushed
+        """
+        result = []
+
+        instance = cls.instance()
+
+        instance.add_event(event)
+
+        if instance.is_for_azure(event):
+            docker_image_available = await instance.build_docker_image_for_azure(event)
+            result.append(docker_image_available)
+            instance.add_event(docker_image_available)
+            if event.metadata.get("credential_name", None) is None:
+                credential_requested = CredentialRequested(
+                    event.metadata.get("credential_name", None),
+                    event.metadata,
+                    [docker_image_available.id]
+                    + docker_image_available.previous_event_ids,
+                )
+                result.append(credential_requested)
+            else:
+                credential_provided = CredentialProvided(
+                    event.metadata.get("credential_name", None),
+                    event.metadata.get("credential_value", None),
+                    event.metadata,
+                    [docker_image_available.id]
+                    + docker_image_available.previous_event_ids,
+                )
+                result.append(credential_provided)
         else:
             result.append(
                 DockerImageFailed(
@@ -512,6 +592,8 @@ class LicdataArtifact(Flow, EventListener):
 
         self.copy_dependencies_to(os.path.join(temp_dir.name, "python_deps"))
 
+        self.copy_cloned_repo_to(os.path.join(temp_dir.name, "licdata"))
+
         # Write the Dockerfile content
         dockerfile_content = f"""
 FROM mcr.microsoft.com/azure-functions/python:{azure_base_image_version}-python{python_version}
@@ -537,6 +619,8 @@ ENV FUNCTIONS_WORKER_RUNTIME python
 ENV PYTHONPATH="${{PYTHONPATH}}:{self.build_pythonpath()}/root/.local/lib/python{python_version}/site-packages"
 
 EXPOSE 80
+
+ADD licdata/ .
         """
 
         # Connect to Docker
@@ -555,6 +639,7 @@ EXPOSE 80
             dockerfile_info.size = len(dockerfile_bytes)
             tar.addfile(dockerfile_info, io.BytesIO(dockerfile_bytes))
             tar.add(temp_dir.name, arcname="python_deps")
+            tar.add(temp_dir.name, arcname="licdata")
 
         # Reset the file pointer to the beginning
         fileobj.seek(0)
@@ -593,7 +678,6 @@ EXPOSE 80
         :param event: The event.
         :type event: pythoneda.shared.runtime.secrets.events.CredentialProvided
         """
-        cls.logger().debug(f"Now I can push the docker image: {event}")
         cls.instance().add_event(event)
         resumed = await cls.instance().resume(event)
 
