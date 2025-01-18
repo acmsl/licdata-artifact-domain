@@ -37,13 +37,18 @@ from pythoneda.shared.artifact.events import (
     DockerImageAvailable,
     DockerImageFailed,
     DockerImagePushed,
+    DockerImagePushFailed,
     DockerImagePushRequested,
     DockerImageRequested,
 )
+from pythoneda.shared.git import GitClone, GitRepo
 from pythoneda.shared.runtime.secrets.events import (
     CredentialProvided,
     CredentialRequested,
 )
+from pythoneda.shared.shell import AsyncShell
+import shutil
+import subprocess
 import tarfile
 import tempfile
 from typing import Dict, List
@@ -94,13 +99,29 @@ class LicdataArtifact(Flow, EventListener):
 
     @classmethod
     @property
-    def url(cls) -> str:
+    def urls(cls) -> List[str]:
         """
-        Retrieves the url.
-        :return: Such url.
+        Retrieves the urls.
+        :return: Such urls.
+        :rtype: List[str]
+        """
+        return [
+            "https://github.com/acmsl-def/licdata-application",
+            "https://github.com/acmsl-def/licdata-infrastructure",
+            "https://github.com/acmsl-def/licdata-domain",
+        ]
+
+    def extract_repo_from_url(self, url: str) -> str:
+        """
+        Extracts the repository name from the url.
+        :param url: The url.
+        :type url: str
+        :return: The repository name.
         :rtype: str
         """
-        return "https://github.com/acmsl/licdata"
+        _, result = GitRepo.extract_repo_owner_and_repo_name(url)
+
+        return result
 
     def nix_path_of(self, derivation: str, build: bool = True) -> str:
         """
@@ -112,7 +133,6 @@ class LicdataArtifact(Flow, EventListener):
         :return: Such path.
         :rtype: str
         """
-        import subprocess
 
         result = None
 
@@ -167,8 +187,6 @@ class LicdataArtifact(Flow, EventListener):
         :param derivation: The derivation.
         :type derivation: str
         """
-        import subprocess
-
         try:
             cmd = ["nix", "build", derivation]
             output = subprocess.run(
@@ -394,8 +412,6 @@ class LicdataArtifact(Flow, EventListener):
         :param dest: The destination.
         :type dest: str
         """
-        import os
-        import shutil
 
         os.makedirs(dest, exist_ok=True)
 
@@ -426,15 +442,15 @@ class LicdataArtifact(Flow, EventListener):
             LicdataArtifact.logger().info(f"Copying {dep['name']} to {dest}")
             self.__class__.copy_dependency_to(dep, dest)
 
-    def copy_cloned_repo_to(self, dest: str):
+    async def clone_and_copy_repos_to(self, dest: str):
         """
-        Copies the cloned repository to a destination.
+        Clones and copies the repositories to a destination.
         :param dest: The destination.
         :type dest: str
         """
         with tempfile.TemporaryDirectory() as tmp_dir:
-            repo_folder = self.clone_artifact(tmp_dir.name)
-            shutil.copytree(repo_folder, dest)
+            repos_folder = await self.clone_artifacts(tmp_dir)
+            shutil.copytree(repos_folder, dest)
 
     def build_pythonpath(self) -> str:
         """
@@ -445,22 +461,26 @@ class LicdataArtifact(Flow, EventListener):
         paths = [
             f'/home/site/wwwroot/python_deps/{dep["name"]}-{dep["version"]}'
             for dep in self.dependencies
+        ] + [
+            f"/home/site/wwwroot/{self.extract_repo_from_url(url)}"
+            for url in self.__class__.urls
         ]
-        LicdataArtifact.logger().debug(f"PYTHONPATH: {':'.join(paths)}")
         return ":".join(paths)
 
-    async def clone_artifact(self, rootFolder: str) -> str:
+    async def clone_artifacts(self, rootFolder: str) -> str:
         """
-        Clones the artifact into given folder.
+        Clones the artifacts into given folder.
         :param rootFolder: The root folder.
         :type rootFolder: str
         :return: The folder of the cloned repository.
         :rtype: str
         """
         git_clone = GitClone(rootFolder)
-        (code, stdout, stderr) = await git_clone.clone(self.url)
+        for url in self.__class__.urls:
+            repo = self.extract_repo_from_url(url)
+            (code, stdout, stderr) = await git_clone.clone(url, repo)
 
-        return rootFolder + "/licdata"
+        return rootFolder
 
     @classmethod
     @listen(DockerImageRequested)
@@ -485,12 +505,6 @@ class LicdataArtifact(Flow, EventListener):
             docker_image_available = await instance.build_docker_image_for_azure(event)
             result.append(docker_image_available)
             instance.add_event(docker_image_available)
-            credential_requested = CredentialRequested(
-                event.metadata.get("credential_name", None),
-                event.metadata,
-                [docker_image_available.id] + docker_image_available.previous_event_ids,
-            )
-            result.append(credential_requested)
         else:
             result.append(
                 DockerImageFailed(
@@ -510,7 +524,7 @@ class LicdataArtifact(Flow, EventListener):
     @classmethod
     @listen(DockerImagePushRequested)
     async def listen_DockerImagePushRequested(
-        cls, event: DockerImagePushed
+        cls, event: DockerImagePushRequested
     ) -> List[Event]:
         """
         Gets notified of a DockerImagePushRequested event.
@@ -585,45 +599,142 @@ class LicdataArtifact(Flow, EventListener):
         :rtype: pythoneda.shared.artifact.events.DockerImageAvailable
         """
         azure_base_image_version = event.metadata.get("azure_base_image_version", "4")
-        python_version = event.metadata.get("python_version", "3.11")
+        python_version = event.metadata.get("python_version", "3.12")
 
         # Create a temporary directory
         temp_dir = tempfile.TemporaryDirectory()
 
-        self.copy_dependencies_to(os.path.join(temp_dir.name, "python_deps"))
+        # self.copy=dependencies_to(os.path.join(temp_dir.name, "python_deps"))
 
-        self.copy_cloned_repo_to(os.path.join(temp_dir.name, "licdata"))
+        licdata_folder = os.path.join(temp_dir.name, "licdata")
+        await self.clone_and_copy_repos_to(licdata_folder)
+        # await self.run_nix_build_in_artifacts_in(licdata_folder)
+        # await self.copy_external_wheel_files(licdata_folder)
+
+        add_content = "\n".join(
+            [
+                f"ADD licdata/{self.extract_repo_from_url(url)} /home/site/wwwroot/"
+                for url in self.__class__.urls
+            ]
+        )
 
         # Write the Dockerfile content
         dockerfile_content = f"""
+FROM ghcr.io/nixos/nix:latest as nix-store-base
+
 FROM mcr.microsoft.com/azure-functions/python:{azure_base_image_version}-python{python_version}
 
 ENV AzureWebJobsScriptRoot=/home/site/wwwroot \
     AzureFunctionsJobHost__Logging__Console__IsEnabled=true \
-    GIT_PYTHON_GIT_EXECUTABLE=/usr/bin/git
+    AzureWebJobsFeatureFlags=EnableWorkerIndexing \
+    FUNCTIONS_WORKER_RUNTIME=python \
+    GIT_PYTHON_GIT_EXECUTABLE=/usr/bin/git \
+    NIX_INSTALLER_NO_PROMPT=1 \
+    NIX_FIRST_BUILD_UID=30001 \
+    NIX_BUILD_USERS=32 \
+    PATH="/nix/var/nix/profiles/default/bin:$PATH" \
+    NIX_PATH="nixpkgs=/nix/var/nix/profiles/per-user/root/channels/nixpkgs" \
+    NIX_CONF_DIR="/etc/nix"
 
-# Install system-level dependencies
-RUN apt-get update && apt-get install -y \
-    libssl-dev git libc-ares2 \
-    && apt-get clean
+# Keeps Python from generating .pyc files in the container.
+ENV PYTHONDONTWRITEBYTECODE=1
 
-# Set the working directory
-WORKDIR /home/site/wwwroot
+# Turns off buffering for easier container logging
+ENV PYTHONUNBUFFERED=1
 
-ADD python_deps/ .
+RUN apt-get update \\
+ && apt-get install -y libssl-dev git libc-ares2 curl sudo xz-utils \\
+ && apt-get clean \\
+ && apt-get -qq remove --purge -y \\
+ && apt-get -qq autoremove \\
+ && rm -rf /tmp/* \\
+ && for f in /var/log/*; do \\
+        echo '' > $f; \\
+    done \\
+ && pip install --upgrade pip \\
+ && pip install grpcio \\
+ && mkdir -p /home/app/.config/nix \\
+ && mkdir -p /home/site/wwwroot \\
+ && chown -R app /home/ \\
+ && echo 'app ALL=(ALL:ALL) NOPASSWD:SETENV: ALL' >> /etc/sudoers \\
+ && chown -R app:app /home/app/.config \\
+ && chsh -s /bin/bash app
 
-RUN pip install --upgrade pip && pip install grpcio
+USER app
 
-ENV FUNCTIONS_WORKER_RUNTIME python
+RUN cd /tmp \\
+ && curl -L https://nixos.org/nix/install -o install-nix.sh \\
+ && sh install-nix.sh --daemon --yes \\
+ && rm install-nix.sh \\
+ && sudo sh -c "echo 'trusted-users = root app' >> /etc/nix/nix.conf" \\
+ && sudo sh -c "echo 'allowed-users = *' >> /etc/nix/nix.conf" \\
+ && sudo sh -c "echo 'sandbox = true' >> /etc/nix/nix.conf"
 
-ENV PYTHONPATH="${{PYTHONPATH}}:{self.build_pythonpath()}/root/.local/lib/python{python_version}/site-packages"
+USER root
+
+# Copy Nix setup from the previous stage
+COPY --from=nix-store-base /nix/store /nix/store
+
+USER app
+
+ENV NIX_CONF_DIR=/home/app/.config/nix
+
+RUN echo 'sandbox = true' >> /home/app/.config/nix/nix.conf \\
+ && echo 'experimental-features = flakes nix-command' >> /home/app/.config/nix/nix.conf \\
+ && (sudo /nix/var/nix/profiles/default/bin/nix-daemon &) \\
+ && for url in {' '.join(map(lambda url: f'"{url}"', self.__class__.urls))}; do \\
+      command cd /home/site/wwwroot \\
+ &&   command git clone "$url" \\
+ &&   command cd "${{url##*/}}" \\
+ &&   command nix build \\
+ &&   command cp result/dist/*.whl /home/site/wwwroot \\
+ &&   find result/deps -name '*.whl' -exec pip install {{}} \\; \\
+ &&   PYTHONEDA_NO_BANNER=1 command nix develop --impure -c bash -c "command pip freeze" | command grep -v PYTHONEDA | command grep -v WARNING >> /home/site/wwwroot/requirements_raw.txt; \\
+    done \\
+ && command sort /home/site/wwwroot/requirements_raw.txt > /home/site/wwwroot/requirements.txt \\
+ && rm -f /home/site/wwwroot/requirements_raw.txt \\
+ && (command pip install -r /home/site/wwwroot/requirements.txt || command echo -n '');
+
+COPY function_app.py host.json Dockerfile /home/site/wwwroot/
 
 EXPOSE 80
+"""
+        LicdataArtifact.logger().debug(dockerfile_content)
 
-ADD licdata/ .
-        """
+        host_json = {
+            "version": "2.0",
+            "logging": {
+                "applicationInsights": {
+                    "samplingSettings": {"isEnabled": True, "excludedTypes": "Request"}
+                }
+            },
+            "extensionBundle": {
+                "id": "Microsoft.Azure.Functions.ExtensionBundle",
+                "version": "[4.*, 5.0.0)",
+            },
+        }
+        local_settings_json = {
+            "IsEncrypted": False,
+            "Values": {
+                "AzureWebJobsStorage": "",
+                "FUNCTIONS_WORKER_RUNTIME": "python",
+                "AzureWebJobsScriptRoot": "/home/site/wwwroot",
+                "AzureFunctionsJobHost__Logging__Console__IsEnabled": "true",
+                "AzureWebJobsFeatureFlags": "EnableWorkerIndexing",
+            },
+        }
+        # requirements_txt = await self.build_aggregate_requirements_txt(licdata_folder)
 
-        # Connect to Docker
+        function_app_py = """
+import azure.functions as func
+from http_blueprint import bp
+
+app = func.FunctionApp()
+
+app.register_functions(bp)
+
+"""
+
         client = docker.from_env()
 
         # Desired image tag
@@ -631,15 +742,34 @@ ADD licdata/ .
         image_version = event.image_version
         image_tag = f"{image_name}:{image_version}"
 
-        # Create an in-memory tar archive with the Dockerfile
+        # Create an in-memory tar archive with the context used by docker build
         fileobj = io.BytesIO()
         with tarfile.TarFile(fileobj=fileobj, mode="w") as tar:
             dockerfile_bytes = dockerfile_content.encode("utf-8")
             dockerfile_info = tarfile.TarInfo("Dockerfile")
             dockerfile_info.size = len(dockerfile_bytes)
             tar.addfile(dockerfile_info, io.BytesIO(dockerfile_bytes))
-            tar.add(temp_dir.name, arcname="python_deps")
-            tar.add(temp_dir.name, arcname="licdata")
+            # tar.add(temp_dir.name, arcname="python_deps")
+            # tar.add(licdata_folder, arcname="licdata")
+            host_json_bytes = json.dumps(
+                host_json, indent=4, ensure_ascii=False
+            ).encode("utf-8")
+            host_json_info = tarfile.TarInfo("host.json")
+            host_json_info.size = len(host_json_bytes)
+            tar.addfile(host_json_info, io.BytesIO(host_json_bytes))
+            # local_settings_json_bytes = json.dumps(local_settings_json).encode("utf-8")
+            # local_settings_json_info = tarfile.TarInfo("local.settings.json")
+            # local_settings_json_info.size = len(local_settings_json_bytes)
+            # tar.addfile(local_settings_json_info, io.BytesIO(local_settings_json_bytes))
+            # requirements_txt_bytes = requirements_txt.encode("utf-8")
+            # requirements_txt_info = tarfile.TarInfo("requirements.txt")
+            # requirements_txt_info.size = len(requirements_txt_bytes)
+            # tar.addfile(requirements_txt_info, io.BytesIO(requirements_txt_bytes))
+            function_app_py_bytes = function_app_py.encode("utf-8")
+            function_app_py_info = tarfile.TarInfo("function_app.py")
+            function_app_py_info.size = len(function_app_py_bytes)
+            tar.addfile(function_app_py_info, io.BytesIO(function_app_py_bytes))
+            print(tar.list())
 
         # Reset the file pointer to the beginning
         fileobj.seek(0)
@@ -656,10 +786,15 @@ ADD licdata/ .
 
         LicdataArtifact.logger().info(f"Image '{image_tag}' built successfully.")
 
+        docker_registry_url = event.metadata.get(
+            "docker_registry_url", "localhost:5000"
+        )
+        local_image = f"{image_name}:{image_version}"
+
         result = DockerImageAvailable(
             image_name,
             image_version,
-            f"localhost:5000/{image_tag}",
+            f"{docker_registry_url}/{local_image}",
             event.metadata,
             [event.id] + event.previous_event_ids,
         )
@@ -714,6 +849,8 @@ ADD licdata/ .
         :return: A request to build a Docker image.
         :rtype: pythoneda.shared.artifact.events.DockerImagePushed
         """
+        result = None
+
         username = credentialProvided.name
         password = credentialProvided.value
         docker_registry_url = credentialProvided.metadata.get(
@@ -723,40 +860,174 @@ ADD licdata/ .
             f"{dockerImageAvailable.image_name}:{dockerImageAvailable.image_version}"
         )
         remote_image = f"{docker_registry_url}/{local_image}"
+        LicdataArtifact.logger().info(f"Pushing {local_image} to {docker_registry_url}")
 
         # 1. Instantiate the Docker client from environment
         client = docker.from_env()
 
-        # 2. Log in to Azure Container Registry
-        login_response = client.login(
-            username=username, password=password, registry=docker_registry_url
-        )
+        try:
+            # 3. Tag the local image with the registry's name
+            image = client.images.get(local_image)
+            image.tag(remote_image)
 
-        # 3. Tag the local image with the registry's name
-        image = client.images.get(local_image)
-        image.tag(remote_image)
+            auth_dict = {
+                "username": username,
+                "password": password,
+                "registry": docker_registry_url,
+            }
+            # 4. Push the image
+            push_logs = client.images.push(
+                remote_image,
+                stream=True,
+                decode=True,
+                auth_config=auth_dict,
+            )
 
-        # 4. Push the image
-        push_log = client.images.push(remote_image, stream=False, decode=True)
+            for log_line in push_logs:
+                # Each 'log_line' is a dict. Examples:
+                # {'status': 'Pushing', 'progressDetail': {...}, ...}
+                # {'errorDetail': {'message': 'unauthorized...'}, 'error': 'unauthorized...'}
+                LicdataArtifact.logger().debug(f"Push log chunk: {log_line}")
 
-        # 5. Print or log the push results
-        LicdataArtifact.logger().debug(push_log)
+                if "error" in log_line:
+                    # Handle the error
+                    error_msg = log_line["error"]
+                    LicdataArtifact.logger().error(f"Push failed: {error_msg}")
+                    result = DockerImagePushFailed(
+                        dockerImageAvailable.image_name,
+                        dockerImageAvailable.image_version,
+                        remote_image,
+                        docker_registry_url,
+                        dockerImageAvailable.metadata,
+                        [dockerImageAvailable.id, credentialProvided.id]
+                        + dockerImageAvailable.previous_event_ids,
+                    )
+                    break
+                else:
+                    # Optional: handle or display status updates
+                    status_msg = log_line.get("status")
+                    if status_msg:
+                        LicdataArtifact.logger().debug(status_msg)
 
-        result = DockerImagePushed(
-            dockerImageAvailable.image_name,
-            dockerImageAvailable.image_version,
-            remote_image,
-            docker_registry_url,
-            dockerImageAvailable.metadata,
-            [dockerImageAvailable.id, credentialProvided.id]
-            + dockerImageAvailable.previous_event_ids,
-        )
+            if result is None:
+                result = DockerImagePushed(
+                    dockerImageAvailable.image_name,
+                    dockerImageAvailable.image_version,
+                    remote_image,
+                    docker_registry_url,
+                    dockerImageAvailable.metadata,
+                    [dockerImageAvailable.id, credentialProvided.id]
+                    + dockerImageAvailable.previous_event_ids,
+                )
+                LicdataArtifact.logger().info(
+                    f"Pushed {remote_image} to {docker_registry_url}"
+                )
+        except docker.errors.APIError as e:
+            result = DockerImagePushFailed(
+                dockerImageAvailable.image_name,
+                dockerImageAvailable.image_version,
+                remote_image,
+                docker_registry_url,
+                e,
+                dockerImageAvailable.metadata,
+                [dockerImageAvailable.id, credentialProvided.id]
+                + dockerImageAvailable.previous_event_ids,
+            )
 
         self.add_event(result)
 
-        LicdataArtifact.logger().info(f"Pushed {remote_image} to {docker_registry_url}")
+        return result
+
+    async def build_aggregate_requirements_txt(self, artifactsFolder: str) -> str:
+        """
+        Builds the requirements.txt content.
+        :param artifactsFolder: The artifacts folder.
+        :type artifactsFolder: str
+        :return: Such content.
+        :rtype: str
+        """
+        result = []
+
+        for url in self.__class__.urls:
+            repo = self.extract_repo_from_url(url)
+            artifact_folder = os.path.join(artifactsFolder, repo)
+            result.append(await self.build_requirements_txt(artifact_folder))
+
+        return "\n".join(result)
+
+    async def build_requirements_txt(
+        self, artifactFolder: str, impure: bool = False
+    ) -> str:
+        """
+        Builds the requirements.txt content.
+        :param artifactFolder: The artifact folder.
+        :type artifactFolder: str
+        :param impure: Whether to run "nix develop" with the "--impure" flag.
+        :type impure: bool
+        :return: Such content.
+        :rtype: str
+        """
+        result = None
+
+        cmd = "pip freeze"
+        LicdataArtifact.logger().debug(
+            f'Launching "nix develop -c {cmd}" on {artifactFolder}'
+        )
+        args = ["command", "nix", "develop", "--impure", "-c", "bash", "-c", cmd]
+        env = os.environ.copy()
+        env["PYTHONEDA_NO_BANNER"] = "1"
+        _, result, stderr = await AsyncShell(args, artifactFolder).run(env=env)
+
+        LicdataArtifact.logger().debug(
+            f'"nix develop -c {cmd}" finished ({result}) / {stderr}'
+        )
 
         return result
+
+    async def run_nix_build_in_artifacts_in(self, baseFolder: str) -> List[str]:
+        """
+        Runs "nix build" for all artifacts in given folder.
+        :param baseFolder: The base folder.
+        :type baseFolder: str
+        :return: The results.
+        :rtype: List[str]
+        """
+        result = []
+        for url in self.__class__.urls:
+            repo = self.extract_repo_from_url(url)
+            artifact_folder = os.path.join(baseFolder, repo)
+            result.append(await self.run_nix_build_in(artifact_folder))
+
+        return result
+
+    async def run_nix_build_in(self, artifactFolder: str) -> str:
+        """
+        Runs "nix build" in given folder.
+        :param artifactFolder: The artifact folder.
+        :type artifactFolder: str
+        :return: The stdout.
+        :rtype: str
+        """
+        LicdataArtifact.logger().debug(f'Launching "nix build" in {artifactFolder}')
+        args = ["command", "nix", "build"]
+        env = os.environ.copy()
+        env["PYTHONEDA_NO_BANNER"] = "1"
+        process, result, stderr = await AsyncShell(args, artifactFolder).run(env=env)
+
+        LicdataArtifact.logger().debug(f'"nix build finished ({result}) / {stderr}')
+
+    async def copy_external_wheel_files(self, baseFolder: str):
+        """
+        Copies external wheel files so that they don't reside outside the root folder.
+        :param baseFolder: The base folder.
+        :type baseFolder: str
+        """
+        for url in self.__class__.urls:
+            repo = self.extract_repo_from_url(url)
+            artifact_folder = os.path.join(baseFolder, repo)
+            pattern = os.path.join(artifact_folder, "result", "*.whl")
+            for file_path in glob.glob(pattern):
+                shutil.copy2(file_path, artifact_folder)
 
 
 # vim: syntax=python ts=4 sw=4 sts=4 tw=79 sr et
