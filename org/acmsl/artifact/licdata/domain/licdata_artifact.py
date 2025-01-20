@@ -19,6 +19,7 @@ GNU General Public License for more details.
 You should have received a copy of the GNU General Public License
 along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """
+from datetime import datetime
 import docker
 import io
 import json
@@ -679,21 +680,26 @@ USER app
 
 ENV NIX_CONF_DIR=/home/app/.config/nix
 
-RUN echo 'sandbox = true' >> /home/app/.config/nix/nix.conf \\
+RUN echo "Making sure this step is not cached by Docker: {datetime.utcnow().isoformat()}" \\
+ && echo 'sandbox = true' >> /home/app/.config/nix/nix.conf \\
  && echo 'experimental-features = flakes nix-command' >> /home/app/.config/nix/nix.conf \\
+ && mkdir /home/site/wwwroot/pkgs \\
  && (sudo /nix/var/nix/profiles/default/bin/nix-daemon &) \\
  && for url in {' '.join(map(lambda url: f'"{url}"', self.__class__.urls))}; do \\
       command cd /home/site/wwwroot \\
  &&   command git clone "$url" \\
  &&   command cd "${{url##*/}}" \\
  &&   command nix build \\
- &&   command cp result/dist/*.whl /home/site/wwwroot \\
- &&   find result/deps -name '*.whl' -exec pip install {{}} \\; \\
- &&   PYTHONEDA_NO_BANNER=1 command nix develop --impure -c bash -c "command pip freeze" | command grep -v PYTHONEDA | command grep -v WARNING >> /home/site/wwwroot/requirements_raw.txt; \\
+ &&   command sudo cp result/deps/*.whl /home/site/wwwroot/pkgs \\
+ &&   command sudo cp result/dist/*.whl /home/site/wwwroot/pkgs \\
+ &&   PYTHONEDA_NO_BANNER=1 command nix develop --impure -c bash -c "command pip freeze" >> /home/site/wwwroot/requirements_raw.txt; \\
     done \\
- && command sort /home/site/wwwroot/requirements_raw.txt > /home/site/wwwroot/requirements.txt \\
- && rm -f /home/site/wwwroot/requirements_raw.txt \\
- && (command pip install -r /home/site/wwwroot/requirements.txt || command echo -n '');
+ && command cd /home/site/wwwroot \\
+ && command sudo chmod a+w pkgs/* \\
+ && command find ./pkgs -name '*.whl' -exec echo {{}} >> /home/site/wwwroot/requirements_raw.txt \\; \\
+ && command sort /home/site/wwwroot/requirements_raw.txt | command uniq | command grep -v 'smmap' > /home/site/wwwroot/requirements.txt \\
+ && (command pip install --find-links=/home/site/wwwroot/pkgs -r /home/site/wwwroot/requirements.txt || command echo -n '') \\
+ && command rm -f /home/site/wwwroot/requirements_raw.txt
 
 COPY function_app.py host.json Dockerfile /home/site/wwwroot/
 
@@ -727,11 +733,11 @@ EXPOSE 80
 
         function_app_py = """
 import azure.functions as func
-from http_blueprint import bp
+from org.acmsl.licdata.infrastructure.clients.azure_functions.list import bp as list_clients
 
 app = func.FunctionApp()
 
-app.register_functions(bp)
+app.register_functions(list_clients)
 
 """
 
