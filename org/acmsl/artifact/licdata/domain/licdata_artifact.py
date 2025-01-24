@@ -107,9 +107,9 @@ class LicdataArtifact(Flow, EventListener):
         :rtype: List[str]
         """
         return [
-            "https://github.com/acmsl-def/licdata-application",
-            "https://github.com/acmsl-def/licdata-infrastructure",
             "https://github.com/acmsl-def/licdata-domain",
+            "https://github.com/acmsl-def/licdata-infrastructure",
+            "https://github.com/acmsl-def/licdata-application",
         ]
 
     def extract_repo_from_url(self, url: str) -> str:
@@ -625,16 +625,19 @@ FROM ghcr.io/nixos/nix:latest as nix-store-base
 
 FROM mcr.microsoft.com/azure-functions/python:{azure_base_image_version}-python{python_version}
 
-ENV AzureWebJobsScriptRoot=/home/site/wwwroot \
-    AzureFunctionsJobHost__Logging__Console__IsEnabled=true \
-    AzureWebJobsFeatureFlags=EnableWorkerIndexing \
-    FUNCTIONS_WORKER_RUNTIME=python \
-    GIT_PYTHON_GIT_EXECUTABLE=/usr/bin/git \
-    NIX_INSTALLER_NO_PROMPT=1 \
-    NIX_FIRST_BUILD_UID=30001 \
-    NIX_BUILD_USERS=32 \
-    PATH="/nix/var/nix/profiles/default/bin:$PATH" \
-    NIX_PATH="nixpkgs=/nix/var/nix/profiles/per-user/root/channels/nixpkgs" \
+ENV PYTHONEDA_ENABLE_AZURE_FUNCTIONS=0 \\
+    PYTHONEDA_APP_FOR_AZURE_FUNCTIONS=org.acmsl.licdata.application.licdata_app.LicdataApp \\
+    PYTHONEDA_EXTRA_NAMESPACES=org \\
+    AzureWebJobsScriptRoot=/home/site/wwwroot \\
+    AzureFunctionsJobHost__Logging__Console__IsEnabled=true \\
+    AzureWebJobsFeatureFlags=EnableWorkerIndexing \\
+    FUNCTIONS_WORKER_RUNTIME=python \\
+    GIT_PYTHON_GIT_EXECUTABLE=/usr/bin/git \\
+    NIX_INSTALLER_NO_PROMPT=1 \\
+    NIX_FIRST_BUILD_UID=30001 \\
+    NIX_BUILD_USERS=32 \\
+    PATH="/nix/var/nix/profiles/default/bin:/home/.local/bin:$PATH" \\
+    NIX_PATH="nixpkgs=/nix/var/nix/profiles/per-user/root/channels/nixpkgs" \\
     NIX_CONF_DIR="/etc/nix"
 
 # Keeps Python from generating .pyc files in the container.
@@ -643,7 +646,9 @@ ENV PYTHONDONTWRITEBYTECODE=1
 # Turns off buffering for easier container logging
 ENV PYTHONUNBUFFERED=1
 
-RUN apt-get update \\
+RUN echo 'Acquire::AllowInsecureRepositories "true";' > /etc/apt/apt.conf.d/99allow-insecure \\
+ && echo 'Acquire::AllowDowngradeToInsecureRepositories "true";' >> /etc/apt/apt.conf.d/99allow-insecure \\
+ && apt-get update \\
  && apt-get install -y libssl-dev git libc-ares2 curl sudo xz-utils \\
  && apt-get clean \\
  && apt-get -qq remove --purge -y \\
@@ -697,9 +702,10 @@ RUN echo "Making sure this step is not cached by Docker: {datetime.utcnow().isof
  && command cd /home/site/wwwroot \\
  && command sudo chmod a+w pkgs/* \\
  && command find ./pkgs -name '*.whl' -exec echo {{}} >> /home/site/wwwroot/requirements_raw.txt \\; \\
- && command sort /home/site/wwwroot/requirements_raw.txt | command uniq | command grep -v 'smmap' > /home/site/wwwroot/requirements.txt \\
+ && command cat /home/site/wwwroot/requirements_raw.txt | command uniq | command grep -v 'smmap' > /home/site/wwwroot/requirements.txt \\
  && (command pip install --find-links=/home/site/wwwroot/pkgs -r /home/site/wwwroot/requirements.txt || command echo -n '') \\
- && command rm -f /home/site/wwwroot/requirements_raw.txt
+ && command rm -f /home/site/wwwroot/requirements_raw.txt \\
+ && command pip install --find-links=/home/site/wwwroot/pkgs --force-reinstall /home/site/wwwroot/pkgs/acmsl_licdata_domain-*.whl
 
 COPY function_app.py host.json Dockerfile /home/site/wwwroot/
 
