@@ -739,10 +739,12 @@ EXPOSE 80
 
         function_app_py = """
 import azure.functions as func
+from org.acmsl.licdata.infrastructure.clients.azure_functions.create import bp as create_client
 from org.acmsl.licdata.infrastructure.clients.azure_functions.list import bp as list_clients
 
 app = func.FunctionApp()
 
+app.register_functions(create_client)
 app.register_functions(list_clients)
 
 """
