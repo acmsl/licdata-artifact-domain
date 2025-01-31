@@ -740,13 +740,39 @@ EXPOSE 80
         function_app_py = """
 import azure.functions as func
 from org.acmsl.licdata.infrastructure.clients.azure_functions.create import bp as create_client
+from org.acmsl.licdata.infrastructure.clients.azure_functions.delete import bp as delete_client
+from org.acmsl.licdata.infrastructure.clients.azure_functions.find_by_id import bp as find_client_by_id
 from org.acmsl.licdata.infrastructure.clients.azure_functions.list import bp as list_clients
+from org.acmsl.licdata.infrastructure.clients.azure_functions.update import bp as update_client
+
+import os
+import sys
+if os.environ.get("GITHUB_TOKEN", None) is None:
+    print("ERROR: GITHUB_TOKEN environment variable is not set", file=sys.stderr)
+    raise ValueError("GITHUB_TOKEN environment variable is not set")
+if os.environ.get("GITHUB_REPO", None) is None:
+    print("ERROR: GITHUB_REPO environment variable is not set", file=sys.stderr)
+    raise ValueError("GITHUB_REPO environment variable is not set")
+if os.environ.get("GITHUB_BRANCH", None) is None:
+    print("ERROR: GITHUB_BRANCH environment variable is not set, file=sys.stderr")
+    raise ValueError("GITHUB_BRANCH environment variable is not set")
+if os.environ.get("ENCRYPTION_ENABLED", None) is None:
+    print("WARNING: ENCRYPTION_ENABLED is NOT set", file=sys.stderr)
+if os.environ.get("ENCRYPTION_ENABLED", None) is not None and os.environ.get("CRYPT_KEY", None) is None:
+    print("ERROR: ENCRYPTION_ENABLED is set but CRYPT_KEY environment variable is not", file=sys.stderr)
+    raise ValueError("ENCRYPTION_ENABLED is set but CRYPT_KEY environment variable is not")
+
+
+# This is required to bootstrap PythonEDA-based Licdata's application layer
+import pythoneda.shared.infrastructure.azure.functions
 
 app = func.FunctionApp()
 
 app.register_functions(create_client)
 app.register_functions(list_clients)
-
+app.register_functions(delete_client)
+app.register_functions(update_client)
+app.register_functions(find_client_by_id)
 """
 
         client = docker.from_env()
