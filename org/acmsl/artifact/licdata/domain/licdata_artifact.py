@@ -738,13 +738,6 @@ EXPOSE 80
         # requirements_txt = await self.build_aggregate_requirements_txt(licdata_folder)
 
         function_app_py = """
-import azure.functions as func
-from org.acmsl.licdata.infrastructure.clients.azure_functions.create import bp as create_client
-from org.acmsl.licdata.infrastructure.clients.azure_functions.delete import bp as delete_client
-from org.acmsl.licdata.infrastructure.clients.azure_functions.find_by_id import bp as find_client_by_id
-from org.acmsl.licdata.infrastructure.clients.azure_functions.list import bp as list_clients
-from org.acmsl.licdata.infrastructure.clients.azure_functions.update import bp as update_client
-
 import os
 import sys
 if os.environ.get("GITHUB_TOKEN", None) is None:
@@ -765,6 +758,14 @@ if os.environ.get("ENCRYPTION_ENABLED", None) is not None and os.environ.get("CR
 
 # This is required to bootstrap PythonEDA-based Licdata's application layer
 import pythoneda.shared.infrastructure.azure.functions
+
+import azure.functions as func
+from org.acmsl.licdata.infrastructure.clients.azure_functions.create import bp as create_client
+from org.acmsl.licdata.infrastructure.clients.azure_functions.delete import bp as delete_client
+from org.acmsl.licdata.infrastructure.clients.azure_functions.find_by_id import bp as find_client_by_id
+from org.acmsl.licdata.infrastructure.clients.azure_functions.list import bp as list_clients
+from org.acmsl.licdata.infrastructure.clients.azure_functions.update import bp as update_client
+
 
 app = func.FunctionApp()
 
